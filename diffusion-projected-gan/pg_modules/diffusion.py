@@ -15,7 +15,7 @@ from torch_utils.ops import upfirdn2d
 from torch_utils.ops import grid_sample_gradfix
 from torch_utils.ops import conv2d_gradfix
 
-#----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # Helpers for doing diffusion process.
 
 
@@ -24,18 +24,20 @@ def get_beta_schedule(beta_schedule, beta_start, beta_end, num_diffusion_timeste
         return 1 / (np.exp(-x) + 1)
 
     def continuous_t_beta(t, T):
-        b_max = 5.
+        b_max = 5.0
         b_min = 0.1
-        alpha = np.exp(-b_min / T - 0.5 * (b_max - b_min) * (2 * t - 1) / T ** 2)
+        alpha = np.exp(-b_min / T - 0.5 * (b_max - b_min) * (2 * t - 1) / T**2)
         return 1 - alpha
 
     if beta_schedule == "continuous_t":
-        betas = continuous_t_beta(np.arange(1, num_diffusion_timesteps+1), num_diffusion_timesteps)
+        betas = continuous_t_beta(
+            np.arange(1, num_diffusion_timesteps + 1), num_diffusion_timesteps
+        )
     elif beta_schedule == "quad":
         betas = (
             np.linspace(
-                beta_start ** 0.5,
-                beta_end ** 0.5,
+                beta_start**0.5,
+                beta_end**0.5,
                 num_diffusion_timesteps,
                 dtype=np.float64,
             )
@@ -54,35 +56,62 @@ def get_beta_schedule(beta_schedule, beta_start, beta_end, num_diffusion_timeste
     elif beta_schedule == "sigmoid":
         betas = np.linspace(-6, 6, num_diffusion_timesteps)
         betas = sigmoid(betas) * (beta_end - beta_start) + beta_start
+    elif beta_schedule == "cosine":
+        """
+        Cosine schedule from Improved DDPM paper
+        https://arxiv.org/abs/2102.09672
+        """
+        steps = num_diffusion_timesteps + 1
+        x = np.linspace(0, num_diffusion_timesteps, steps, dtype=np.float64)
+        alphas_cumprod = (
+            np.cos(((x / num_diffusion_timesteps) + 0.008) / 1.008 * np.pi * 0.5) ** 2
+        )
+        alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+        betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+        betas = np.clip(betas, a_min=0, a_max=0.999)
     else:
         raise NotImplementedError(beta_schedule)
     assert betas.shape == (num_diffusion_timesteps,)
     return betas
 
 
-def q_sample(x_0, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, t, noise_type='gauss', noise_std=1.0):
+def q_sample(
+    x_0,
+    alphas_bar_sqrt,
+    one_minus_alphas_bar_sqrt,
+    t,
+    noise_type="gauss",
+    noise_std=1.0,
+):
     batch_size, num_channels, _, _ = x_0.shape
-    if noise_type == 'gauss':
+    if noise_type == "gauss":
         noise = torch.randn_like(x_0, device=x_0.device) * noise_std
-    elif noise_type == 'bernoulli':
-        noise = (torch.bernoulli(torch.ones_like(x_0) * 0.5) * 2 - 1.) * noise_std
+    elif noise_type == "bernoulli":
+        noise = (torch.bernoulli(torch.ones_like(x_0) * 0.5) * 2 - 1.0) * noise_std
     else:
         raise NotImplementedError(noise_type)
     alphas_t_sqrt = alphas_bar_sqrt[t].view(batch_size, num_channels, 1, 1)
-    one_minus_alphas_bar_t_sqrt = one_minus_alphas_bar_sqrt[t].view(batch_size, num_channels, 1, 1)
+    one_minus_alphas_bar_t_sqrt = one_minus_alphas_bar_sqrt[t].view(
+        batch_size, num_channels, 1, 1
+    )
     x_t = alphas_t_sqrt * x_0 + one_minus_alphas_bar_t_sqrt * noise
     return x_t
 
 
 @persistence.persistent_class
 class Diffusion(torch.nn.Module):
-    def __init__(self,
-        beta_schedule='linear', beta_start=1e-4, beta_end=1e-2,
-        t_min=5, t_max=500, noise_std=0.5,
+    def __init__(
+        self,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=1e-2,
+        t_min=5,
+        t_max=500,
+        noise_std=0.5,
     ):
         super().__init__()
-        self.p = 0.0       # Overall multiplier for augmentation probability.
-        self.noise_type = self.base_noise_type = 'gauss'
+        self.p = 0.0  # Overall multiplier for augmentation probability.
+        self.noise_type = self.base_noise_type = "gauss"
         self.base_schedule = beta_schedule
         self.beta_start = beta_start
         self.beta_end = beta_end
@@ -92,7 +121,7 @@ class Diffusion(torch.nn.Module):
         self.update_T()
 
         # Image-space corruptions.
-        self.noise_std = float(noise_std)        # Standard deviation of additive RGB noise.
+        self.noise_std = float(noise_std)  # Standard deviation of additive RGB noise.
 
     def set_diffusion_process(self, t, beta_schedule):
 
@@ -107,7 +136,7 @@ class Diffusion(torch.nn.Module):
         self.num_timesteps = betas.shape[0]
 
         alphas = self.alphas = 1.0 - betas
-        alphas_cumprod = torch.cat([torch.tensor([1.]), alphas.cumprod(dim=0)])
+        alphas_cumprod = torch.cat([torch.tensor([1.0]), alphas.cumprod(dim=0)])
         self.alphas_bar_sqrt = torch.sqrt(alphas_cumprod)
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - alphas_cumprod)
 
@@ -120,7 +149,9 @@ class Diffusion(torch.nn.Module):
         self.t_epl = np.zeros(64, dtype=np.int)
         diffusion_ind = min(round(self.p * 64), 48)  # 48
         prob_t = np.arange(t) / np.arange(t).sum()
-        t_diffusion = np.random.choice(np.arange(1, t+1), size=diffusion_ind, p=prob_t)
+        t_diffusion = np.random.choice(
+            np.arange(1, t + 1), size=diffusion_ind, p=prob_t
+        )
         self.t_epl[:diffusion_ind] = t_diffusion
 
     def forward(self, x_0, noise_std=1.0):
@@ -131,11 +162,93 @@ class Diffusion(torch.nn.Module):
         alphas_bar_sqrt = self.alphas_bar_sqrt.to(device)
         one_minus_alphas_bar_sqrt = self.one_minus_alphas_bar_sqrt.to(device)
 
-        t = torch.from_numpy(np.random.choice(self.t_epl, size=batch_size * num_channels, replace=True)).to(device)
+        t = torch.from_numpy(
+            np.random.choice(self.t_epl, size=batch_size * num_channels, replace=True)
+        ).to(device)
 
-        x_t = q_sample(x_0, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, t,
-                       noise_type=self.noise_type,
-                       noise_std=noise_std)
+        x_t = q_sample(
+            x_0,
+            alphas_bar_sqrt,
+            one_minus_alphas_bar_sqrt,
+            t,
+            noise_type=self.noise_type,
+            noise_std=noise_std,
+        )
         return x_t
 
-#----------------------------------------------------------------------------
+
+@persistence.persistent_class
+class StableDiffusion(Diffusion):
+    def __init__(
+        self,
+        beta_schedule="cosine",  # Используем косинусное расписание
+        beta_start=0.00085,  # Параметры для совместимости (не используются в cosine)
+        beta_end=0.012,  # Параметры для совместимости
+        t_min=1000,  # Фиксируем минимальное количество шагов
+        t_max=1000,  # Фиксируем максимальное количество шагов
+        noise_std=1.0,  # Стандартное отклонение шума
+    ):
+        super().__init__(
+            beta_schedule=beta_schedule,
+            beta_start=beta_start,
+            beta_end=beta_end,
+            t_min=t_min,
+            t_max=t_max,
+            noise_std=noise_std,
+        )
+        self.update_T()
+
+    def set_diffusion_process(self, t, beta_schedule):
+        # Переопределяем для явного использования cosine расписания
+        betas = get_beta_schedule(
+            beta_schedule="cosine",  # Всегда используем cosine
+            beta_start=0.00085,  # Параметры из оригинальной реализации
+            beta_end=0.012,  # Параметры из оригинальной реализации
+            num_diffusion_timesteps=t,
+        )
+
+        betas = self.betas = torch.from_numpy(betas).float()
+        self.num_timesteps = betas.shape[0]
+
+        alphas = self.alphas = 1.0 - betas
+        alphas_cumprod = torch.cat([torch.tensor([1.0]), alphas.cumprod(dim=0)])
+        self.alphas_bar_sqrt = torch.sqrt(alphas_cumprod)
+        self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - alphas_cumprod)
+
+    def update_T(self):
+        # Фиксируем количество шагов диффузии
+        t = self.t_max
+        self.set_diffusion_process(t, "cosine")
+
+        # Инициализируем массив временных шагов для равномерной выборки
+        self.t_epl = np.arange(1, t + 1)
+
+    def forward(self, x_0, noise_std=1.0):
+        assert isinstance(x_0, torch.Tensor) and x_0.ndim == 4
+        batch_size, num_channels, height, width = x_0.shape
+        device = x_0.device
+
+        alphas_bar_sqrt = self.alphas_bar_sqrt.to(device)
+        one_minus_alphas_bar_sqrt = self.one_minus_alphas_bar_sqrt.to(device)
+
+        # Равномерный выбор временных шагов
+        t = torch.randint(
+            low=1,
+            high=self.num_timesteps + 1,
+            size=(batch_size * num_channels,),
+            device=device,
+        ).long()
+
+        # Применяем диффузионный процесс
+        x_t = q_sample(
+            x_0,
+            alphas_bar_sqrt,
+            one_minus_alphas_bar_sqrt,
+            t,
+            noise_type=self.noise_type,
+            noise_std=self.noise_std,
+        )
+        return x_t
+
+
+# ----------------------------------------------------------------------------
