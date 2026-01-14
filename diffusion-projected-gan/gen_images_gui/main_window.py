@@ -1,166 +1,20 @@
+# python
 import os
-import re
 import glob
-from typing import List, Optional, Tuple, Union
-from pathlib import Path
 
-import numpy as np
-import PIL.Image
-import torch
+# 3rdparty
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QComboBox, QFileDialog,
     QMessageBox, QScrollArea
 )
-from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 
-import dnnlib
-import legacy
+# project
+from .threads import GenerationWorker
+from .utils import parse_range, parse_vec2
 
-
-#----------------------------------------------------------------------------
-
-def parse_range(s: Union[str, List]) -> List[int]:
-    '''Parse a comma separated list of numbers or ranges and return a list of ints.
-
-    Example: '1,2,5-10' returns [1, 2, 5, 6, 7]
-    '''
-    if isinstance(s, list): 
-        return s
-    ranges = []
-    range_re = re.compile(r'^(\d+)-(\d+)$')
-    for p in s.split(','):
-        m = range_re.match(p)
-        if m:
-            ranges.extend(range(int(m.group(1)), int(m.group(2))+1))
-        else:
-            ranges.append(int(p))
-    return ranges
-
-
-def parse_vec2(s: Union[str, Tuple[float, float]]) -> Tuple[float, float]:
-    '''Parse a floating point 2-vector of syntax 'a,b'.
-
-    Example:
-        '0,1' returns (0,1)
-    '''
-    if isinstance(s, tuple): 
-        return s
-    parts = s.split(',')
-    if len(parts) == 2:
-        return (float(parts[0]), float(parts[1]))
-    raise ValueError(f'cannot parse 2-vector {s}')
-
-
-def make_transform(translate: Tuple[float, float], angle: float):
-    m = np.eye(3)
-    s = np.sin(angle/360.0*np.pi*2)
-    c = np.cos(angle/360.0*np.pi*2)
-    m[0][0] = c
-    m[0][1] = s
-    m[0][2] = translate[0]
-    m[1][0] = -s
-    m[1][1] = c
-    m[1][2] = translate[1]
-    return m
-
-
-#----------------------------------------------------------------------------
-
-class GenerationWorker(QThread):
-    """Рабочий поток для генерации изображений"""
-    
-    log_message = Signal(str)
-    generation_complete = Signal(str, int)  # Передает путь к директории и ожидаемое количество изображений
-    error_occurred = Signal(str)
-    
-    def __init__(self, network_pkl, seeds, truncation_psi, noise_mode, 
-                 outdir, translate, rotate, class_idx):
-        super().__init__()
-        self.network_pkl = network_pkl
-        self.seeds = seeds
-        self.truncation_psi = truncation_psi
-        self.noise_mode = noise_mode
-        self.outdir = outdir
-        self.translate = translate
-        self.rotate = rotate
-        self.class_idx = class_idx
-        
-    def run(self):
-        try:
-            self.log_message.emit(f'Загрузка сети из "{self.network_pkl}"...')
-            device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-            
-            with dnnlib.util.open_url(self.network_pkl) as f:
-                G = legacy.load_network_pkl(f)['G_ema'].to(device)  # type: ignore
-            
-            os.makedirs(self.outdir, exist_ok=True)
-            
-            # Labels.
-            label = torch.zeros([1, G.c_dim], device=device)
-            if G.c_dim != 0:
-                if self.class_idx is None:
-                    self.error_occurred.emit('Необходимо указать метку класса (--class) при использовании условной сети')
-                    return
-                label[:, self.class_idx] = 1
-            else:
-                if self.class_idx is not None:
-                    self.log_message.emit('Предупреждение: --class игнорируется при работе с безусловной сетью')
-            
-            # Generate images.
-            expected_count = len(self.seeds)
-            generated_files = []
-            
-            for seed_idx, seed in enumerate(self.seeds):
-                self.log_message.emit(f'Генерация изображения для seed {seed} ({seed_idx+1}/{expected_count})...')
-                z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device).float()
-                
-                # Construct an inverse rotation/translation matrix and pass to the generator.
-                if hasattr(G.synthesis, 'input'):
-                    m = make_transform(self.translate, self.rotate)
-                    m = np.linalg.inv(m)
-                    G.synthesis.input.transform.copy_(torch.from_numpy(m))
-                
-                img = G(z, label, truncation_psi=self.truncation_psi, noise_mode=self.noise_mode)
-                img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-                filename = f'{self.outdir}/seed{seed:04d}.png'
-                PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(filename)
-                generated_files.append(filename)
-                self.log_message.emit(f'Сгенерировано изображение: {filename}')
-            
-            # Убедимся, что ВСЕ файлы записаны на диск перед отправкой сигнала
-            import time
-            max_wait_time = 5.0  # Максимальное время ожидания в секундах
-            wait_interval = 0.1  # Интервал проверки в секундах
-            waited_time = 0.0
-            
-            self.log_message.emit('Проверка записи всех файлов на диск...')
-            
-            # Проверяем, что все ожидаемые файлы существуют на диске
-            existing_files = []
-            while waited_time < max_wait_time:
-                existing_files = [f for f in generated_files if os.path.exists(f)]
-                if len(existing_files) == expected_count:
-                    # Проверяем, что файлы не пустые (размер > 0)
-                    all_valid = all(os.path.getsize(f) > 0 for f in existing_files)
-                    if all_valid:
-                        break
-                time.sleep(wait_interval)
-                waited_time += wait_interval
-            
-            if len(existing_files) != expected_count:
-                self.log_message.emit(f'Предупреждение: найдено {len(existing_files)} из {expected_count} файлов')
-            
-            self.log_message.emit(f'Генерация завершена! Всего изображений: {expected_count}')
-            # Отправить сигнал только после генерации ВСЕХ изображений и проверки их наличия на диске
-            self.generation_complete.emit(self.outdir, expected_count)
-            
-        except Exception as e:
-            self.error_occurred.emit(f'Ошибка при генерации: {str(e)}')
-
-
-#----------------------------------------------------------------------------
 
 class ImageGeneratorGUI(QMainWindow):
     """Главное окно GUI приложения"""
@@ -191,72 +45,91 @@ class ImageGeneratorGUI(QMainWindow):
         # === 1. Верхняя часть: поля ввода параметров ===
         params_layout = QVBoxLayout()
         
-        # Network
+        # Определяем минимальную ширину для всех лейблов для выравнивания
+        label_min_width = 200
+        
+        # Сеть
         network_layout = QHBoxLayout()
-        network_layout.addWidget(QLabel('Network (--network):'))
+        network_label = QLabel('Network (--network):')
+        network_label.setMinimumWidth(label_min_width)
+        network_layout.addWidget(network_label)
         self.network_input = QLineEdit()
         self.network_input.setPlaceholderText('Путь к файлу сети или URL')
-        network_layout.addWidget(self.network_input)
+        network_layout.addWidget(self.network_input, stretch=1)
         browse_network_btn = QPushButton('Обзор...')
         browse_network_btn.clicked.connect(self.browse_network_file)
         network_layout.addWidget(browse_network_btn)
         params_layout.addLayout(network_layout)
         
-        # Seeds
+        # Семена (seeds)
         seeds_layout = QHBoxLayout()
-        seeds_layout.addWidget(QLabel('Seeds (--seeds):'))
+        seeds_label = QLabel('Seeds (--seeds):')
+        seeds_label.setMinimumWidth(label_min_width)
+        seeds_layout.addWidget(seeds_label)
         self.seeds_input = QLineEdit()
         self.seeds_input.setPlaceholderText('Например: 0,1,4-6')
-        seeds_layout.addWidget(self.seeds_input)
+        seeds_layout.addWidget(self.seeds_input, stretch=1)
         params_layout.addLayout(seeds_layout)
         
         # Truncation Psi
         trunc_layout = QHBoxLayout()
-        trunc_layout.addWidget(QLabel('Truncation Psi (--trunc):'))
+        trunc_label = QLabel('Truncation Psi (--trunc):')
+        trunc_label.setMinimumWidth(label_min_width)
+        trunc_layout.addWidget(trunc_label)
         self.trunc_input = QLineEdit('1')
         self.trunc_input.setPlaceholderText('1')
-        trunc_layout.addWidget(self.trunc_input)
+        trunc_layout.addWidget(self.trunc_input, stretch=1)
         params_layout.addLayout(trunc_layout)
         
-        # Class
+        # Класс
         class_layout = QHBoxLayout()
-        class_layout.addWidget(QLabel('Class (--class):'))
+        class_label = QLabel('Class (--class):')
+        class_label.setMinimumWidth(label_min_width)
+        class_layout.addWidget(class_label)
         self.class_input = QLineEdit()
         self.class_input.setPlaceholderText('Опционально: метка класса')
-        class_layout.addWidget(self.class_input)
+        class_layout.addWidget(self.class_input, stretch=1)
         params_layout.addLayout(class_layout)
         
-        # Noise Mode
+        # Режим шума
         noise_layout = QHBoxLayout()
-        noise_layout.addWidget(QLabel('Noise Mode (--noise-mode):'))
+        noise_label = QLabel('Noise Mode (--noise-mode):')
+        noise_label.setMinimumWidth(label_min_width)
+        noise_layout.addWidget(noise_label)
         self.noise_mode_combo = QComboBox()
         self.noise_mode_combo.addItems(['const', 'random', 'none'])
         self.noise_mode_combo.setCurrentText('const')
-        noise_layout.addWidget(self.noise_mode_combo)
+        noise_layout.addWidget(self.noise_mode_combo, stretch=1)
         params_layout.addLayout(noise_layout)
         
-        # Translate
+        # Перенос
         translate_layout = QHBoxLayout()
-        translate_layout.addWidget(QLabel('Translate (--translate):'))
+        translate_label = QLabel('Translate (--translate):')
+        translate_label.setMinimumWidth(label_min_width)
+        translate_layout.addWidget(translate_label)
         self.translate_input = QLineEdit('0,0')
         self.translate_input.setPlaceholderText('0,0')
-        translate_layout.addWidget(self.translate_input)
+        translate_layout.addWidget(self.translate_input, stretch=1)
         params_layout.addLayout(translate_layout)
         
-        # Rotate
+        # Поворот
         rotate_layout = QHBoxLayout()
-        rotate_layout.addWidget(QLabel('Rotate (--rotate):'))
+        rotate_label = QLabel('Rotate (--rotate):')
+        rotate_label.setMinimumWidth(label_min_width)
+        rotate_layout.addWidget(rotate_label)
         self.rotate_input = QLineEdit('0')
         self.rotate_input.setPlaceholderText('0')
-        rotate_layout.addWidget(self.rotate_input)
+        rotate_layout.addWidget(self.rotate_input, stretch=1)
         params_layout.addLayout(rotate_layout)
         
-        # Outdir
+        # Выходная директория
         outdir_layout = QHBoxLayout()
-        outdir_layout.addWidget(QLabel('Output Directory (--outdir):'))
+        outdir_label = QLabel('Output Directory (--outdir):')
+        outdir_label.setMinimumWidth(label_min_width)
+        outdir_layout.addWidget(outdir_label)
         self.outdir_input = QLineEdit('out')
         self.outdir_input.setPlaceholderText('out')
-        outdir_layout.addWidget(self.outdir_input)
+        outdir_layout.addWidget(self.outdir_input, stretch=1)
         browse_outdir_btn = QPushButton('Обзор...')
         browse_outdir_btn.clicked.connect(self.browse_output_directory)
         outdir_layout.addWidget(browse_outdir_btn)
@@ -491,13 +364,3 @@ class ImageGeneratorGUI(QMainWindow):
         # Обновить изображение при изменении размера окна
         if self.image_files and 0 <= self.current_image_index < len(self.image_files):
             self.show_image(self.current_image_index)
-
-def main():
-    app = QApplication([])
-    window = ImageGeneratorGUI()
-    window.show()
-    app.exec()
-
-
-if __name__ == "__main__":
-    main()
