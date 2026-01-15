@@ -6,7 +6,7 @@ from typing import List, Tuple, Union
 import numpy as np
 
 
-def parse_range(s: Union[str, List]) -> List[int]:
+def parse_range(s: Union[str, List[int]]) -> List[int]:
     """Парсит строку с числами или диапазонами, разделенными запятыми, и возвращает список целых чисел.
 
     Пример: '1,2,5-10' возвращает [1, 2, 5, 6, 7]
@@ -38,7 +38,7 @@ def parse_vec2(s: Union[str, Tuple[float, float]]) -> Tuple[float, float]:
     raise ValueError(f'cannot parse 2-vector {s}')
 
 
-def make_transform(translate: Tuple[float, float], angle: float):
+def make_transform(translate: Tuple[float, float], angle: float) -> np.ndarray:
     """Создать матрицу трансформации для поворота и переноса."""
     m = np.eye(3)
     s = np.sin(angle/360.0*np.pi*2)

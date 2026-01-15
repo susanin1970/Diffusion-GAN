@@ -1,6 +1,7 @@
 # python
 import os
 import time
+from typing import List, Optional, Tuple
 
 # 3rdparty
 import dnnlib
@@ -21,19 +22,28 @@ class GenerationWorker(QThread):
     generation_complete = Signal(str, int)  # Передает путь к директории и ожидаемое количество изображений
     error_occurred = Signal(str)
     
-    def __init__(self, network_pkl, seeds, truncation_psi, noise_mode, 
-                 outdir, translate, rotate, class_idx):
+    def __init__(
+        self,
+        network_pkl: str,
+        seeds: List[int],
+        truncation_psi: float,
+        noise_mode: str,
+        outdir: str,
+        translate: Tuple[float, float],
+        rotate: float,
+        class_idx: Optional[int]
+    ) -> None:
         super().__init__()
-        self.network_pkl = network_pkl
-        self.seeds = seeds
-        self.truncation_psi = truncation_psi
-        self.noise_mode = noise_mode
-        self.outdir = outdir
-        self.translate = translate
-        self.rotate = rotate
-        self.class_idx = class_idx
+        self.network_pkl: str = network_pkl
+        self.seeds: List[int] = seeds
+        self.truncation_psi: float = truncation_psi
+        self.noise_mode: str = noise_mode
+        self.outdir: str = outdir
+        self.translate: Tuple[float, float] = translate
+        self.rotate: float = rotate
+        self.class_idx: Optional[int] = class_idx
         
-    def run(self):
+    def run(self) -> None:
         try:
             self.log_message.emit(f'Загрузка сети из "{self.network_pkl}"...')
             device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication
 from .main_window import ImageGeneratorGUI
 
 
-def main():
+def main() -> None:
     """Главная функция запуска приложения."""
     app = QApplication([])
     window = ImageGeneratorGUI()

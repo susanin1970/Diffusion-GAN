@@ -1,6 +1,7 @@
 # python
 import os
 import glob
+from typing import Optional, Tuple, List
 
 # 3rdparty
 from PySide6.QtWidgets import (
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QScrollArea
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QResizeEvent
 
 # project
 from .threads import GenerationWorker
@@ -21,20 +22,20 @@ class ImageGeneratorGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Генератор изображений - Diffusion Projected GAN')
+        self.setWindowTitle('Генератор изображений - Diffusion GAN')
         self.setGeometry(100, 100, 1000, 800)
         
         # Переменные для управления изображениями
-        self.current_image_index = 0
-        self.image_files = []
-        self.outdir = ""
+        self.current_image_index: int = 0
+        self.image_files: List[str] = []
+        self.outdir: str = ""
         
         # Рабочий поток генерации
-        self.worker = None
+        self.worker: Optional[GenerationWorker] = None
         
         self.init_ui()
         
-    def init_ui(self):
+    def init_ui(self) -> None:
         """Инициализация интерфейса"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -185,10 +186,9 @@ class ImageGeneratorGUI(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(150)
         main_layout.addWidget(self.log_text)
+    
         
-        self.log_message('Готов к генерации изображений')
-        
-    def browse_network_file(self):
+    def browse_network_file(self) -> None:
         """Открыть диалог выбора файла сети"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, 'Выберите файл сети', '', 'Pickle Files (*.pkl);;All Files (*)'
@@ -196,7 +196,7 @@ class ImageGeneratorGUI(QMainWindow):
         if file_path:
             self.network_input.setText(file_path)
     
-    def browse_output_directory(self):
+    def browse_output_directory(self) -> None:
         """Открыть диалог выбора директории для сохранения"""
         dir_path = QFileDialog.getExistingDirectory(self, 'Выберите директорию для сохранения')
         if dir_path:
@@ -209,7 +209,7 @@ class ImageGeneratorGUI(QMainWindow):
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
     
-    def validate_inputs(self) -> tuple:
+    def validate_inputs(self) -> Optional[Tuple[str, List[int], float, str, str, Tuple[float, float], float, Optional[int]]]:
         """Проверка и парсинг входных данных"""
         try:
             network_pkl = self.network_input.text().strip()
@@ -245,7 +245,7 @@ class ImageGeneratorGUI(QMainWindow):
             QMessageBox.critical(self, 'Ошибка валидации', f'Ошибка в параметрах: {str(e)}')
             return None
     
-    def start_generation(self):
+    def start_generation(self) -> None:
         """Запуск генерации изображений"""
         params = self.validate_inputs()
         if params is None:
@@ -277,7 +277,7 @@ class ImageGeneratorGUI(QMainWindow):
         self.worker.error_occurred.connect(self.on_generation_error)
         self.worker.start()
     
-    def on_generation_complete(self, outdir: str, expected_count: int):
+    def on_generation_complete(self, outdir: str, expected_count: int) -> None:
         """Обработка завершения генерации"""
         self.generate_btn.setEnabled(True)
         self.generate_btn.setText('Сгенерировать изображения')
@@ -302,13 +302,13 @@ class ImageGeneratorGUI(QMainWindow):
             self.preview_label.setText('Изображения не найдены')
             self.log_message('Ошибка: изображения не найдены в выходной директории')
     
-    def on_generation_error(self, error_message: str):
+    def on_generation_error(self, error_message: str) -> None:
         """Обработка ошибки генерации"""
         self.generate_btn.setEnabled(True)
         self.generate_btn.setText('Сгенерировать изображения')
         QMessageBox.critical(self, 'Ошибка генерации', error_message)
     
-    def load_images(self, directory: str):
+    def load_images(self, directory: str) -> None:
         """Загрузить список изображений из директории"""
         self.image_files = sorted(glob.glob(os.path.join(directory, '*.png')))
         self.image_files.extend(sorted(glob.glob(os.path.join(directory, '*.jpg'))))
@@ -321,7 +321,7 @@ class ImageGeneratorGUI(QMainWindow):
         else:
             self.log_message('Изображения не найдены в директории')
     
-    def show_image(self, index: int):
+    def show_image(self, index: int) -> None:
         """Показать изображение по индексу"""
         if not self.image_files or index < 0 or index >= len(self.image_files):
             return
@@ -348,17 +348,17 @@ class ImageGeneratorGUI(QMainWindow):
         filename = os.path.basename(image_path)
         self.log_message(f'Отображено изображение: {filename}')
     
-    def show_previous_image(self):
+    def show_previous_image(self) -> None:
         """Показать предыдущее изображение"""
         if self.current_image_index > 0:
             self.show_image(self.current_image_index - 1)
     
-    def show_next_image(self):
+    def show_next_image(self) -> None:
         """Показать следующее изображение"""
         if self.current_image_index < len(self.image_files) - 1:
             self.show_image(self.current_image_index + 1)
     
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         """Обработка изменения размера окна"""
         super().resizeEvent(event)
         # Обновить изображение при изменении размера окна
