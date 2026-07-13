@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import timm
 from pg_modules.blocks import FeatureFusionBlock
-from pg_modules.diffusion import Diffusion
+from pg_modules.diffusion import StableDiffusion
 
 
 def _make_scratch_ccm(scratch, in_channels, cout, expand=False):
@@ -116,7 +116,7 @@ class F_RandomProj(nn.Module):
         self.d_pos = d_pos
         self.noise_sd = noise_sd
         # self.diffusion = AugmentPipe(t_max=1000)
-        self.diffusion = Diffusion(t_min=5, t_max=500, beta_start=1e-4, beta_end=1e-2)
+        self.diffusion = StableDiffusion()
         # build pretrained feature network and random decoder (scratch)
         self.pretrained, self.scratch = _make_projector(im_res=im_res, cout=self.cout, proj_type=self.proj_type, expand=self.expand)
         self.CHANNELS = self.pretrained.CHANNELS
